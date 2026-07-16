@@ -1,8 +1,9 @@
-# Dockerfile
+# Dockerfile.optimized
+# Stage 1: Build stage
 FROM node:20-alpine AS builder
 WORKDIR /app
 
-# Accept build arguments for Next.js public env vars only
+# Accept build arguments for Next.js public env vars
 ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
 
@@ -10,8 +11,10 @@ ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
 ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
 ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
 
-# Copy package files and install ALL dependencies (including dev for build)
+# Copy package files first (better caching)
 COPY package*.json ./
+
+# Install ALL dependencies (including dev for build)
 RUN npm ci
 
 # Copy source code
@@ -20,29 +23,35 @@ COPY . .
 # Build the application
 RUN npm run build
 
-# Production stage
+# Prune dev dependencies - THIS IS KEY FOR SIZE REDUCTION
+RUN npm prune --production
+
+# Stage 2: Production stage
 FROM node:20-alpine AS runner
 WORKDIR /app
 
-# Create a non-root user for security
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
+# Set NODE_ENV early for all commands
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
 
-# Copy necessary files from builder
+# Set runtime environment variables
+ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
+ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+# Create a non-root user for security
+RUN addgroup --system --gid 1001 nodejs && \
+  adduser --system --uid 1001 nextjs
+
+# Copy ONLY production dependencies and build output
 COPY --from=builder --chown=nextjs:nodejs /app/package*.json ./
 COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
 COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/next.config.ts ./
 
-# Set environment variables for production
-ENV NODE_ENV=production
-ENV PORT=3000
-ENV HOSTNAME="0.0.0.0"
-
-# These will be available at runtime
-ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
-ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
+# Optional: If you have static files in other directories
+# COPY --from=builder --chown=nextjs:nodejs /app/.env.production ./.env.production 2>/dev/null || true
 
 # Switch to non-root user
 USER nextjs
